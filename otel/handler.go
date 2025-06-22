@@ -66,8 +66,8 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	// Check for span context
 	span := trace.SpanFromContext(ctx)
-	if !span.SpanContext().IsValid() && len(h.preAttrs) == 0 {
-		// No trace context and no pre-attrs, just pass through
+	if !span.SpanContext().IsValid() && len(h.preAttrs) == 0 && len(h.groups) == 0 && len(h.groupedAttrs) == 0 {
+		// No trace context, no pre-attrs, no groups, no grouped attrs - safe to pass through
 		return h.handler.Handle(ctx, r)
 	}
 

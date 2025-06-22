@@ -439,4 +439,60 @@ func Test_OtelHandler(t *testing.T) {
 			t.Errorf("enabled should be in module.component group, not at root: %s", line)
 		}
 	})
+
+	t.Run("groups should work without tracing context", func(t *testing.T) {
+		// Create capture stream and base handler
+		buf := new(bytes.Buffer)
+		baseHandler := slog.NewTextHandler(buf, nil)
+
+		// Wrap with OtelHandler
+		handler := Wrap(baseHandler)
+		logger := slog.New(handler)
+
+		// Create nested groups and attributes
+		groupedLogger := logger.WithGroup("module").WithGroup("component")
+		loggerWithAttrs := groupedLogger.With(
+			slog.Int("counter", 100),
+			slog.String("status", "running"),
+		)
+
+		// Log WITHOUT span context (no tracing)
+		loggerWithAttrs.Info("operation completed without tracing")
+
+		// Get the output (trim trailing newline for splitting)
+		output := strings.TrimSuffix(buf.String(), "\n")
+		lines := strings.Split(output, "\n")
+
+		// Verify log output
+		if len(lines) != 1 {
+			t.Fatalf("expected 1 line logged, got: %d", len(lines))
+		}
+
+		line := lines[0]
+		t.Logf("Output: %s", line)
+
+		// Verify NO otel attributes (since no tracing)
+		if strings.Contains(line, `otel.trace_id=`) {
+			t.Errorf("unexpected otel.trace_id in output without tracing: %s", line)
+		}
+		if strings.Contains(line, `otel.span_id=`) {
+			t.Errorf("unexpected otel.span_id in output without tracing: %s", line)
+		}
+
+		// Verify the grouped attributes are properly nested in module.component group
+		if !strings.Contains(line, `module.component.counter=100`) {
+			t.Errorf("module.component.counter missing from output: %s", line)
+		}
+		if !strings.Contains(line, `module.component.status=running`) {
+			t.Errorf("module.component.status missing from output: %s", line)
+		}
+
+		// Verify attributes are NOT at root level (that would be the bug)
+		if strings.Contains(line, `counter=100`) && !strings.Contains(line, `module.component.counter=100`) {
+			t.Errorf("counter should be in module.component group, not at root: %s", line)
+		}
+		if strings.Contains(line, `status=running`) && !strings.Contains(line, `module.component.status=running`) {
+			t.Errorf("status should be in module.component group, not at root: %s", line)
+		}
+	})
 }
