@@ -24,7 +24,7 @@ func Test_OtelHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create resource: %v", err)
 		}
-		
+
 		tp := sdktrace.NewTracerProvider(
 			sdktrace.WithResource(res),
 		)
@@ -144,7 +144,7 @@ func Test_OtelHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create resource: %v", err)
 		}
-		
+
 		tp := sdktrace.NewTracerProvider(
 			sdktrace.WithResource(res),
 		)
@@ -214,7 +214,7 @@ func Test_OtelHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create resource: %v", err)
 		}
-		
+
 		tp := sdktrace.NewTracerProvider(
 			sdktrace.WithResource(res),
 		)
@@ -273,6 +273,83 @@ func Test_OtelHandler(t *testing.T) {
 		}
 		if strings.Contains(lines[0], `otel.service_name=`) {
 			t.Errorf("unexpected otel.service_name in output (should skip unknown_service): %s", lines[0])
+		}
+	})
+
+	t.Run("otel group should be at absolute root level with deeply nested groups", func(t *testing.T) {
+		// Create a tracer provider with service name
+		res, err := resource.New(context.Background(),
+			resource.WithAttributes(
+				semconv.ServiceName("deep-service"),
+			),
+		)
+		if err != nil {
+			t.Fatalf("failed to create resource: %v", err)
+		}
+
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithResource(res),
+		)
+		tracer := tp.Tracer("test-tracer")
+
+		// Create capture stream and base handler
+		buf := new(bytes.Buffer)
+		baseHandler := slog.NewTextHandler(buf, nil)
+
+		// Wrap with OtelHandler
+		handler := Wrap(baseHandler)
+		logger := slog.New(handler)
+
+		// Create deeply nested groups: consumer.checkconfig.scheduler.consumer.checkconfig
+		deepLogger := logger.
+			WithGroup("consumer").
+			WithGroup("checkconfig").
+			WithGroup("scheduler").
+			WithGroup("consumer").
+			WithGroup("checkconfig")
+
+		// Start a span and log within its context
+		ctx, span := tracer.Start(context.Background(), "test-span")
+		defer span.End()
+
+		// Log with the span context using deeply nested logger
+		deepLogger.InfoContext(ctx, "test message", "key", "value")
+
+		// Get the output (trim trailing newline for splitting)
+		output := strings.TrimSuffix(buf.String(), "\n")
+		lines := strings.Split(output, "\n")
+
+		// Verify log output
+		if len(lines) != 1 {
+			t.Fatalf("expected 1 line logged, got: %d", len(lines))
+		}
+
+		// Verify otel attributes are at absolute root level (otel.* format)
+		if !strings.Contains(lines[0], `otel.trace_id=`) {
+			t.Errorf("otel.trace_id missing from output: %s", lines[0])
+		}
+		if !strings.Contains(lines[0], `otel.span_id=`) {
+			t.Errorf("otel.span_id missing from output: %s", lines[0])
+		}
+		if !strings.Contains(lines[0], `otel.service_name=deep-service`) {
+			t.Errorf("otel.service_name missing from output: %s", lines[0])
+		}
+
+		// Verify the nested grouped attribute is present with dot notation
+		if !strings.Contains(lines[0], `consumer.checkconfig.scheduler.consumer.checkconfig.key=value`) {
+			t.Errorf("nested grouped attribute missing from output: %s", lines[0])
+		}
+
+		// Verify that otel group is NOT nested inside any other groups
+		// It should NOT appear as consumer.otel.*, consumer.checkconfig.otel.*, etc.
+		if strings.Contains(lines[0], `consumer.otel.trace_id=`) {
+			t.Errorf("otel group should NOT be inside consumer group, but found consumer.otel.trace_id in output: %s", lines[0])
+		}
+		if strings.Contains(lines[0], `consumer.checkconfig.otel.trace_id=`) {
+			t.Errorf("otel group should NOT be inside consumer.checkconfig group, but found consumer.checkconfig.otel.trace_id in output: %s", lines[0])
+		}
+		if strings.Contains(lines[0], `consumer.checkconfig.scheduler.consumer.checkconfig.otel.trace_id=`) {
+			t.Errorf("otel group should NOT be inside nested groups, but found nested otel.trace_id in output: %s", lines[0])
 		}
 	})
 }

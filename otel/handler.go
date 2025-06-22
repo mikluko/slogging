@@ -16,7 +16,7 @@ func getServiceName(span trace.Span) string {
 	if span == nil {
 		return ""
 	}
-	
+
 	// Get resource from span (available in newer SDK versions)
 	if spanWithResource, ok := span.(interface{ Resource() *resource.Resource }); ok {
 		if res := spanWithResource.Resource(); res != nil {
@@ -29,7 +29,7 @@ func getServiceName(span trace.Span) string {
 			}
 		}
 	}
-	
+
 	return ""
 }
 
@@ -79,12 +79,12 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 			slog.String("trace_id", span.SpanContext().TraceID().String()),
 			slog.String("span_id", span.SpanContext().SpanID().String()),
 		}
-		
+
 		// Add service name if available
 		if serviceName := getServiceName(span); serviceName != "" {
 			otelAttrs = append(otelAttrs, slog.String("service_name", serviceName))
 		}
-		
+
 		newRecord.AddAttrs(slog.Group("otel", otelAttrs...))
 	}
 
@@ -163,19 +163,11 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 	copy(newGroups, h.groups)
 	newGroups[len(h.groups)] = name
 
-	// Don't call WithGroup on the wrapped handler when we have groups
-	// We'll handle the grouping ourselves in Handle
-	var newHandler slog.Handler
-	if len(h.groups) == 0 {
-		// First group, keep the base handler
-		newHandler = h.handler
-	} else {
-		// Already have groups, propagate
-		newHandler = h.handler.WithGroup(name)
-	}
-
+	// ALWAYS keep the base handler - never call WithGroup on it
+	// We'll handle ALL grouping ourselves in Handle to ensure
+	// otel attributes stay at the absolute root level
 	return &Handler{
-		handler:  newHandler,
+		handler:  h.handler, // Always use the original base handler
 		preAttrs: h.preAttrs,
 		groups:   newGroups,
 	}
