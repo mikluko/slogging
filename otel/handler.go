@@ -37,9 +37,10 @@ func getServiceName(span trace.Span) string {
 // (trace_id, span_id, and service_name) to log records. It wraps another handler and
 // ensures trace attributes are always added at the root level in an "otel" group.
 type Handler struct {
-	handler  slog.Handler
-	preAttrs []slog.Attr // Attributes to prepend (including trace attrs)
-	groups   []string    // Current group path
+	handler     slog.Handler // Always the original base handler, never wrapped
+	preAttrs    []slog.Attr  // Attributes to prepend (including trace attrs)
+	groups      []string     // Current group path
+	groupedAttrs []slog.Attr // Attributes that should be placed in current group
 }
 
 // Wrap creates a new OpenTelemetry-aware handler that wraps
@@ -48,9 +49,10 @@ type Handler struct {
 // span_id, and service_name attributes at the root level in an "otel" group.
 func Wrap(handler slog.Handler) *Handler {
 	return &Handler{
-		handler:  handler,
-		preAttrs: nil,
-		groups:   nil,
+		handler:      handler,
+		preAttrs:     nil,
+		groups:       nil,
+		groupedAttrs: nil,
 	}
 }
 
@@ -94,17 +96,24 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	// Now we need to handle groups properly
 	// We'll rebuild the structure with groups
 	if len(h.groups) > 0 {
-		// We need to wrap the remaining attrs in the group structure
-		var groupedAttrs []slog.Attr
+		// Collect all attributes that should be in the group:
+		// 1. Attributes from the original record (r.Attrs)
+		// 2. Attributes added via WithAttrs (h.groupedAttrs)
+		var allGroupedAttrs []slog.Attr
+		
+		// Add grouped attributes first (from WithAttrs calls)
+		allGroupedAttrs = append(allGroupedAttrs, h.groupedAttrs...)
+		
+		// Add attributes from the record
 		r.Attrs(func(a slog.Attr) bool {
-			groupedAttrs = append(groupedAttrs, a)
+			allGroupedAttrs = append(allGroupedAttrs, a)
 			return true
 		})
 
 		// Build nested groups from inside out
 		// Convert attrs to any slice
-		anyAttrs := make([]any, len(groupedAttrs))
-		for i, a := range groupedAttrs {
+		anyAttrs := make([]any, len(allGroupedAttrs))
+		for i, a := range allGroupedAttrs {
 			anyAttrs[i] = a
 		}
 
@@ -115,7 +124,8 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 
 		newRecord.AddAttrs(current)
 	} else {
-		// No groups, just add the remaining attributes
+		// No groups, add grouped attrs and record attrs at root level
+		newRecord.AddAttrs(h.groupedAttrs...)
 		r.Attrs(func(a slog.Attr) bool {
 			newRecord.AddAttrs(a)
 			return true
@@ -139,17 +149,23 @@ func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		copy(newPreAttrs[len(h.preAttrs):], attrs)
 
 		return &Handler{
-			handler:  h.handler,
-			preAttrs: newPreAttrs,
-			groups:   h.groups,
+			handler:      h.handler,
+			preAttrs:     newPreAttrs,
+			groups:       h.groups,
+			groupedAttrs: h.groupedAttrs,
 		}
 	}
 
-	// In a group, need to use wrapped handler
+	// In a group, add to groupedAttrs to be processed during Handle
+	newGroupedAttrs := make([]slog.Attr, len(h.groupedAttrs)+len(attrs))
+	copy(newGroupedAttrs, h.groupedAttrs)
+	copy(newGroupedAttrs[len(h.groupedAttrs):], attrs)
+
 	return &Handler{
-		handler:  h.handler.WithAttrs(attrs),
-		preAttrs: h.preAttrs,
-		groups:   h.groups,
+		handler:      h.handler, // Always keep the original base handler
+		preAttrs:     h.preAttrs,
+		groups:       h.groups,
+		groupedAttrs: newGroupedAttrs,
 	}
 }
 
@@ -167,8 +183,9 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 	// We'll handle ALL grouping ourselves in Handle to ensure
 	// otel attributes stay at the absolute root level
 	return &Handler{
-		handler:  h.handler, // Always use the original base handler
-		preAttrs: h.preAttrs,
-		groups:   newGroups,
+		handler:      h.handler, // Always use the original base handler
+		preAttrs:     h.preAttrs,
+		groups:       newGroups,
+		groupedAttrs: h.groupedAttrs, // Carry forward any grouped attributes
 	}
 }
